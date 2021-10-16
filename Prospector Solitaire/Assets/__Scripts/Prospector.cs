@@ -1,0 +1,421 @@
+using System.Collections;
+using System.Collections.Generic;
+using UnityEngine;
+using UnityEngine.UI;
+using UnityEngine.SceneManagement;
+
+public class Prospector : MonoBehaviour
+{
+    static public Prospector S;
+
+    [Header("Set in Inspector")]
+    public TextAsset deckXMl;
+    public TextAsset layoutXML;
+    public float xOffSet = 3;
+    public float YOffSet = -2.5f;
+    public Vector3 layoutCenter;
+    public Vector2 fsPosMid = new Vector2(0.5f, 0.90f);
+    public Vector2 fsPosRun = new Vector2(0.5f, 0.75f);
+    public Vector2 fsPosMid2 = new Vector2(0.4f, 1.0f);
+    public Vector2 fsPosEnd = new Vector2(0.5f, 0.95f);
+    public float reloadDelay = 2f;//Задержка между раундами 2 сек
+    public Text gameOverText, roundResultText, highScoreText;
+
+    [Header("Set Dynamically")]
+    public Deck deck;
+    public Layout layout;
+    public List<CardProspector> drawPile;
+    public Transform layoutAnchor;
+    public CardProspector target;
+    public List<CardProspector> tableau;
+    public List<CardProspector> discardPile;
+    public FloatingScore fsRun;
+
+    private void Awake()
+    {
+        S = this;
+        SetUpUITexts();
+    }
+    void SetUpUITexts()
+    {
+        //Настроить объект HighScore
+        GameObject go = GameObject.Find("HighScore");
+        if (go != null)
+        {
+            highScoreText = go.GetComponent<Text>();
+        }
+        int highScore = ScoreManager.HIGH_SCORE;
+        string hScore = "High Score: " + Utils.AddCommasToNumber(highScore);
+        go.GetComponent<Text>().text = hScore;
+
+        //Настроить надписи отображаемые в конце раунда
+        go = GameObject.Find("GameOver");
+        if (go != null)
+        {
+            gameOverText = go.GetComponent<Text>();
+        }
+        go = GameObject.Find("RoundResult");
+        if (go != null)
+        {
+            roundResultText = go.GetComponent<Text>();
+        }
+        //Скрыть надписи
+        ShowResultsUI(false);
+    }
+    void ShowResultsUI(bool show)
+    {
+        gameOverText.gameObject.SetActive(show);
+        roundResultText.gameObject.SetActive(show);
+    }
+    private void Start()
+    {
+        Scoreboard.S.score = ScoreManager.SCORE;
+        deck = GetComponent<Deck>();//Получить компонент Deck
+        layout = GetComponent<Layout>();
+        layout.ReadLayout(layoutXML.text);
+        deck.InitDeck(deckXMl.text);//Передать ему DeckXML
+        Deck.Shuffle(ref deck.cards);//Перемешать колоду передав ее по ссылке
+        drawPile = ConvertListCardToListCardProspectors(deck.cards);
+        LayoutGame();
+
+        //Card c;
+        //for (int cNum = 0; cNum < deck.cards.Count; cNum++)//Этот цикл выводит карты в новом, перемешанном порядке
+        //{
+        //    c = deck.cards[cNum];
+        //    c.transform.localPosition = new Vector3((cNum % 13) * 3, cNum / 13 * 4, 0);
+        //}
+    }
+
+    List<CardProspector> ConvertListCardToListCardProspectors(List<Card> lCD)
+    {
+        List<CardProspector> lCP = new List<CardProspector>();
+        CardProspector tCP;
+        foreach (Card tCD in lCD)
+        {
+            tCP = tCD as CardProspector;
+            lCP.Add(tCP);
+        }
+        return lCP;
+    }
+    //Функция Draw снимает одну карту с вершины drawPile и возвращает ее
+    CardProspector Draw()
+    {
+        CardProspector cd = drawPile[0];//Снять нулевую карту CardProspector
+        drawPile.RemoveAt(0);//Удалить из List<> drawPile
+        return cd;//И вернуть ее
+    }
+    //LayoutGame() размещаает карты в начальной раскладке - "шахте"
+    void LayoutGame()
+    {
+        //Создать пустой игровой объект, который будет служить центром раскладки
+        if (layoutAnchor == null)
+        {
+            GameObject tGo = new GameObject("_LayoutAnchor");//Нам не нужен якорь как объект, а только пустая позиция в пространстве
+            //Создать пустой игровой объект с именем _LayoutAnchor в иерархии
+            layoutAnchor = tGo.transform;//Получить его компонент Transform
+            layoutAnchor.transform.position = layoutCenter;//Поместить в центр
+        }
+        CardProspector cp;
+        //разложить карты
+        foreach (SlotDef tSD in layout.slotDefs)
+        {
+            //Выполнить обход всех определений slotDefs в layout.slotDefs
+            cp = Draw();//Выбрать первую карту (сверху) из стопки drawpile
+            cp.faceUP = tSD.faceUp;//Установить ее признак faceUp в соответствии с определением в SlotDef
+            cp.transform.parent = layoutAnchor;//Назначить layoutAnchor ее родителем
+            //Эта операция заменит предыдущего родителя: deck.deckAnchor, который после запуска игры отображается в иерархии с именем _Deck
+            cp.transform.localPosition = new Vector3(layout.multiplier.x * tSD.x, layout.multiplier.y * tSD.y, -tSD.layerID);
+            //Установить localPosition катры в соответствии с определением в SlotDef
+            cp.layoutID = tSD.id;
+            cp.slotDef = tSD;
+            //Карты CardProspector в основной раскладке имеют состояние CardState.tableau;
+            cp.state = eCardState.tableau;
+            float setGold = Random.value;
+            if (setGold <= 0.1f)
+            {
+                cp.itsGold = true;
+                SpriteRenderer sr = cp.GetComponent<SpriteRenderer>();
+                sr.sprite = deck.cardFrontGold;
+                SpriteRenderer srBack = cp.back.GetComponent<SpriteRenderer>();
+                srBack.sprite = deck.cardBackGold;
+            }
+            cp.SetSortinglayerName(tSD.layerName);//назначить слой сортировки
+            tableau.Add(cp);//Добавляем карту в список tableau
+        }
+        //Настроить списки карт, мешающих перевернуть данную
+        foreach (CardProspector tCP in tableau)
+        {
+            foreach (int hid in tCP.slotDef.hiddenBy)
+            {
+                cp = FindCardByLayoutID(hid);
+                tCP.hiddenBy.Add(cp);
+            }
+        }
+        //Выбрать начальную целевую карту
+        MoveToTarger(Draw());
+        //Разложить стопку свободных карт
+        UpdateDrawPile();
+    }
+    //Преобразует номер слота layuotID в экзембляр CardProspector с этим номером
+    CardProspector FindCardByLayoutID(int LayoutID)
+    {
+        foreach (CardProspector tCP in tableau)
+        {
+            //Поиск по всем кртамв списке tableau
+            if (tCP.layoutID == LayoutID)
+            {
+                //Если номер слота карты совпадает с искомым, вернуть ее
+                return tCP;
+            }
+        }
+        //Если ничего не найдено,вернуть null
+        return null;
+    }
+    //Поворачивает карты в основной раскладке лицевой стороной вверх или вниз
+    void SetTableauFaces()
+    {
+        foreach (CardProspector cd in tableau)
+        {
+            bool faceUP = true;//Предположить, что карта должна быть повернута лицевой стороной вверх
+            foreach (CardProspector cover in cd.hiddenBy)
+            {
+                //Если любая из карт,перекрывает текущую, присутсвует в основной раскладке
+                if (cover.state == eCardState.tableau)
+                {
+                    faceUP = false;//повернуть лицевой стороной вниз
+                }
+            }
+            cd.faceUP = faceUP;//Повернуть карту так или иначе
+        }
+    }
+    //Перемещает текущую целевую карту в стопку сброшенных карт
+    void MoveToDiscard(CardProspector cp)
+    {
+        //установить состояние карты как discard(сброшена)
+        cp.state = eCardState.discard;
+        discardPile.Add(cp);
+        cp.transform.parent = layoutAnchor;
+        cp.transform.localPosition = new Vector3(layout.multiplier.x * layout.discardPile.x, layout.multiplier.y * layout.discardPile.y, -layout.discardPile.layerID+0.5f);
+        cp.faceUP = true;
+        //Поместить поверх стопки для сортировки по глубине
+        cp.SetSortinglayerName(layout.discardPile.layerName);
+        cp.SetSortOrder(-100 + discardPile.Count);
+    }
+    //Делает карту cd новой целевой картой
+    void MoveToTarger(CardProspector cd)
+    {
+        //Если целевая карта существует, переместить ее в стопку сброшенных карт
+        if (target != null) MoveToDiscard(target);
+        target = cd;//cd-новая целевая карта
+        cd.state = eCardState.target;
+        cd.transform.parent = layoutAnchor;
+        //Переместить на место для целевой карты
+        cd.transform.localPosition = new Vector3(layout.multiplier.x * layout.discardPile.x, layout.multiplier.y * layout.discardPile.y, -layout.discardPile.layerID);
+        cd.faceUP = true;//Повернуть лицевой стороной вверх
+        //Настроить сортировку по глубине
+        cd.SetSortinglayerName(layout.discardPile.layerName);
+        cd.SetSortOrder(0);
+    }
+    //Раскладывать стопку свободных карт, чтобы было видно, сколько карт осталось
+    void UpdateDrawPile()
+    {
+        CardProspector cd;
+        //Выполнить обход всех карт в drawPile
+        for (int i = 0; i < drawPile.Count; i++)
+        {
+            cd = drawPile[i];
+            cd.transform.parent = layoutAnchor;
+            //Расположить с учетом смещения layout.discardPile.stagger
+            Vector2 dpStagger = layout.drawPile.stagger;
+            cd.transform.localPosition = new Vector3(layout.multiplier.x * (layout.drawPile.x + i * dpStagger.x), layout.multiplier.y * (layout.drawPile.y + i * dpStagger.y), -layout.drawPile.layerID + 0.1f * i);
+            cd.faceUP = false;
+            cd.state = eCardState.drawpile;
+            //Настроить сортировку по глубине
+            cd.SetSortinglayerName(layout.drawPile.layerName);
+            cd.SetSortOrder(-10*i);
+        }
+    }
+    //CardClicer вызывается в ответ на щелчок по любой карте
+    public void CardClicer(CardProspector cd)
+    {
+        //Реакция определяется состоянием карты
+        switch (cd.state)
+        {
+            case eCardState.drawpile:
+                //Щелчок по любой карте в стопке свободных карт приводит к смене целевой карты
+                MoveToDiscard(target);//Переместить целевую карту в discardPile
+                MoveToTarger(Draw());//Переместить верхнюю свободную карту на место целевой
+                UpdateDrawPile();//Повторно разложить стопку свободных карт
+                ScoreManager.EVENT(eScoreEvent.draw);
+                FloatingScoreHandler(eScoreEvent.draw);
+                break;
+            case eCardState.tableau:
+                //Для карты в основной раскладке проверяется возможность ее перемещения на место целевой
+                bool validMatch = true;
+                if (!cd.faceUP)
+                {
+                    //Карта, повернутая лицевой стороной вниз не может перемещатся
+                    validMatch = false;
+                }
+                if (!AdjacentRank(cd, target))
+                {
+                    //Если правило старшенства не соблюдается, карта не может перемещатся
+                    validMatch = false;
+                }
+                if (!validMatch) return;//Выйти если карта не может перемещатся
+                //Мы здесь,ура! Карты может переместится
+                tableau.Remove(cd);//Удалить из списка tableau
+                MoveToTarger(cd);//Сделать ее целевой
+                SetTableauFaces();//Повернуть карты в основной раскладке вверх или вниз
+                if (cd.itsGold)
+                {
+                    ScoreManager.EVENT(eScoreEvent.mineGold);
+                    FloatingScoreHandler(eScoreEvent.mineGold);
+                } else
+                {
+                    ScoreManager.EVENT(eScoreEvent.mine);
+                    FloatingScoreHandler(eScoreEvent.mine);
+                }
+                break;
+            case eCardState.target:
+                //Щелчок по целевой карте игнорируется
+                break;
+        }
+        //Проверить завершение игры
+        CheckForGameOver();
+    }
+    //Проверяет завершение игры
+    void CheckForGameOver()
+    {
+        //Если основная раскладка опустела, игра завершена
+        if (tableau.Count ==0)
+        {
+            //Вызвать GameOver() с признаком победы
+            GameOver(true);
+        }
+        //если есть еще свободные карты,игра не завершилась
+        if (drawPile.Count>0)
+        {
+            return;
+        }
+        //Проверить наличие допустимых ходов
+        foreach (CardProspector cd in tableau)
+        {
+            if (AdjacentRank(cd, target))
+            {
+                //Если есть допустимый ход,игра не завершилась
+                return;
+            }
+        }
+        //Т.к. допустимых ходов нет, игра завершилась
+        //Вызвать GameOver с признаком проигрыша
+        GameOver(false);
+    }
+    //Вызывается когда игра завершилась
+    void GameOver(bool won)
+    {
+        int score = ScoreManager.SCORE;
+        if (fsRun != null)
+        {
+            score += fsRun.score;
+        }
+        if (won)
+        {
+            gameOverText.text = "Round Over";
+            roundResultText.text = "You won this round!\nHigh score: " + score;
+            ShowResultsUI(true);
+            ScoreManager.EVENT(eScoreEvent.gameWin);
+            FloatingScoreHandler(eScoreEvent.gameWin);
+        } else
+        {
+            gameOverText.text = "Game Over";
+            if (ScoreManager.HIGH_SCORE <= score)
+            {
+                string str = "You got the high score!\nHigh score: " + score;
+                roundResultText.text = str;
+            } else
+            {
+                roundResultText.text = "Your final score was: " + score;
+            }
+            ShowResultsUI(true);
+            ScoreManager.EVENT(eScoreEvent.gameLoss);
+            FloatingScoreHandler(eScoreEvent.gameLoss);
+        }
+        //Перезагрузите сцену через reloadDelay секунд
+        //Это позволит числу с очками долететь до места назначения
+        Invoke("ReloadLevel", reloadDelay);
+    }
+    void ReloadLevel()
+    {
+        //Перезагрузить сцену и сбросить игру в исходное состояние
+        SceneManager.LoadScene("__Prospector_Scene_0");
+    }
+    //возвращаем true, если две карты соответствуют правилу старшинства (с учетом циклического переноса старшинства между тузом и королем)
+    public bool AdjacentRank(CardProspector c0, CardProspector c1)
+    {
+        //Если любая из карт повернута лицевой стороной вниз, правило старшинства не соблюдается
+        if (!c0.faceUP || !c1.faceUP) return false;
+        //Если достоинства карт отличаются на 1, правило старшинства соблюдается
+        if (Mathf.Abs(c0.rank - c1.rank) == 1)
+        {
+            return true;
+        }
+        //Если одна карта туз, а другая король, то правило соблюдается
+        if (c0.rank == 1 && c1.rank == 13) return true;
+        if (c0.rank == 13 && c1.rank == 1) return true;
+        //Иначе вернуть false
+        return false;
+    }
+
+    //Обрабатывать движение FloatingScore
+    void FloatingScoreHandler(eScoreEvent evt)
+    {
+        List<Vector2> fsPts;
+        switch (evt)
+        {
+            //В случае победы, проигрыша и завершения хода выполняются одни и теже действия
+            case eScoreEvent.draw:
+            case eScoreEvent.gameWin:
+            case eScoreEvent.gameLoss:
+                //Добавить fsRun в Scoreboard
+                if (fsRun != null)
+                {
+                    //Создаем точки кривой Безье
+                    fsPts = new List<Vector2>();
+                    fsPts.Add(fsPosRun);
+                    fsPts.Add(fsPosMid2);
+                    fsPts.Add(fsPosEnd);
+                    fsRun.reportFinishTo = Scoreboard.S.gameObject;
+                    fsRun.Init(fsPts, 0, 1);
+                    //Также скоректировать fontSize
+                    fsRun.fontSizes = new List<float>(new float[] { 28, 36, 4 });
+                    fsRun = null;//Очистить fsRun, чтобы создать заново
+                }
+                break;
+
+            case eScoreEvent.mine:
+            case eScoreEvent.mineGold://Удаление карты из основной раскладки
+                //Создать FloatingScore для отображения этого количества очков
+                FloatingScore fs;
+                //Переместить из позиции указателя мыши mouseposition в fsPosRun
+                Vector2 p0 = Input.mousePosition;
+                p0.x /= Screen.width;
+                p0.y /= Screen.height;
+                fsPts = new List<Vector2>();
+                fsPts.Add(p0);
+                fsPts.Add(fsPosMid);
+                fsPts.Add(fsPosRun);
+                fs = Scoreboard.S.CreateFloatingScore(ScoreManager.CHAIN, fsPts);
+                fs.fontSizes = new List<float>(new float[] { 4, 50, 28 });
+                if (fsRun == null)
+                {
+                    fsRun = fs;
+                    fsRun.reportFinishTo = null;
+                } else
+                {
+                    fs.reportFinishTo = fsRun.gameObject;
+                }
+                break;
+        }
+    }
+}
